@@ -1,0 +1,129 @@
+services:
+  # 1) Generate demo pcaps (runs once and exits)
+  pcapgen:
+    image: python:3.11.13-slim-trixie
+    working_dir: /app
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        pip install -r requirements.txt
+        python make_pcap.py /pcaps/attacker.pcap
+        python make_pcap_http.py
+        python make_pcap_icmp.py
+        python make_pcap_ssh.py
+        python make_pcap_tls.py
+        echo ">>> pcapgen done."
+    volumes:
+      - ./pcapgen:/app
+      - ./pcaps:/pcaps
+
+  # 2) Suricata reads all pcaps then idles
+  suricata:
+    image: jasonish/suricata:latest
+    entrypoint: []
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        shopt -s nullglob
+        count=0
+        for f in /pcaps/*.pcap; do
+          count=$$((count+1))
+          echo ">>> Running Suricata on $$f"
+          suricata -c /etc/suricata/suricata.yaml -l /var/log/suricata -r "$$f"
+        done
+        echo ">>> Processed $$count pcaps. Sleeping…"
+        sleep infinity
+    depends_on:
+      - pcapgen
+    volumes:
+      - ./pcaps:/pcaps
+      - ./suricata/suricata.yaml:/etc/suricata/suricata.yaml
+      - ./suricata/suricata.rules:/etc/suricata/rules/suricata.rules
+      - suri-logs:/var/log/suricata
+
+  # 3) Ingest: backfill + tail eve.json -> OpenSearch (+ optional SSE notify)
+  ingest:
+    image: python:3.11.13-slim-trixie
+    working_dir: /app
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        pip install -r requirements.txt
+        python ingest.py
+    environment:
+      - OPENSEARCH_URL=${OPENSEARCH_URL}
+      - INDEX_NAME=${ALERTS_INDEX}
+      - API_URL=http://api:3001
+      - API_KEY=${API_KEY}
+      - EVE_PATH=/var/log/suricata/eve.json
+    depends_on:
+      - suricata
+      - opensearch
+    volumes:
+      - ./ingest:/app
+      - suri-logs:/var/log/suricata:ro
+
+  # 4) OpenSearch single-node (dev only)
+  opensearch:
+    image: opensearchproject/opensearch:2.13.0
+    environment:
+      - discovery.type=single-node
+      - DISABLE_SECURITY_PLUGIN=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    healthcheck:
+      test: [ "CMD", "curl", "-fsS", "http://opensearch:9200" ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # 5) API (Node)
+  api:
+    image: node:20-bullseye
+    working_dir: /app
+    command: [ "node", "server.js" ]
+    environment:
+      - OPENSEARCH_URL=${OPENSEARCH_URL}
+      - ALERTS_INDEX=${ALERTS_INDEX}
+      - BLOCK_INDEX=${BLOCK_INDEX}
+      - API_KEY=${API_KEY}
+      - FRONTEND_ORIGIN=${FRONTEND_ORIGIN}
+    depends_on:
+      - opensearch
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./api:/app
+
+  # 6) Frontend (Vite build -> Nginx)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=${VITE_API_URL}
+        - VITE_API_KEY=${VITE_API_KEY}
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
+volumes:
+  suri-logs:
+  opensearch-data:
