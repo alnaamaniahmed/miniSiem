@@ -97,7 +97,7 @@ services:
   api:
     image: node:20-bullseye
     working_dir: /app
-    command: [ "node", "server.js" ]
+    command: bash -c "npm install --omit=dev && node server.js"
     environment:
       - OPENSEARCH_URL=${OPENSEARCH_URL}
       - ALERTS_INDEX=${ALERTS_INDEX}
