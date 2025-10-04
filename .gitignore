@@ -1,0 +1,14 @@
+# .gitignore
+.env
+.env.*
+!.env.example
+
+node_modules/
+dist/
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+.opensearch-data/
+pcaps/*.pcap
+var/

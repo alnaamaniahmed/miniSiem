@@ -1,0 +1,6 @@
+.git
+node_modules
+pcaps/*.pcap
+.opensearch-data
+**/__pycache__
+**/*.pyc
